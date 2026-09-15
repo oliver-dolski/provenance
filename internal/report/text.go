@@ -26,7 +26,7 @@ func Text(w io.Writer, r Report) error {
 	out.printf("%s %s\n", r.Tool, r.Version)
 	out.printf("%-*s%s\n", labelWidth, "scanned", r.Path)
 	if len(r.Sources) > 0 {
-		out.printf("%-*s%s\n", labelWidth, "read", strings.Join(r.Sources, ", "))
+		out.labelled("read", strings.Join(r.Sources, ", "))
 	}
 
 	writeComponents(out, r)
@@ -100,7 +100,7 @@ func writeCoverage(out *writer, r Report) {
 		out.printf("%-*s%d with no resolved version could not be checked\n", labelWidth, "", len(r.Unchecked))
 	}
 	if len(r.KnownNames) > 0 {
-		out.printf("%-*snames compared against %s\n", labelWidth, "", knownNames(r.KnownNames))
+		out.labelled("", "names compared against "+knownNames(r.KnownNames))
 	}
 }
 
@@ -243,4 +243,18 @@ func (w *writer) printf(format string, args ...any) {
 		return
 	}
 	_, w.err = fmt.Fprintf(w.w, format, args...)
+}
+
+// labelled writes a summary line in the two-column layout, wrapping the value
+// under its own column rather than running off the terminal. The label is
+// printed once, on the first line.
+func (w *writer) labelled(label, value string) {
+	lines := wrap(value, textWidth-labelWidth)
+	if len(lines) == 0 {
+		return
+	}
+	w.printf("%-*s%s\n", labelWidth, label, lines[0])
+	for _, line := range lines[1:] {
+		w.printf("%-*s%s\n", labelWidth, "", line)
+	}
 }
