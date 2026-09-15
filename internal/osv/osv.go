@@ -124,6 +124,10 @@ func (c *Client) Check(ctx context.Context, components []component.Component) (R
 		}
 	}
 
+	// OSV aggregates several databases, so one vulnerability commonly arrives as
+	// two or three records that name each other. They are folded together
+	// before the caller ever counts them.
+	result.Findings = dedupe(result.Findings)
 	finding.Sort(result.Findings)
 	return result, nil
 }
