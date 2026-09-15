@@ -1,15 +1,14 @@
 // Command provenance is a supply-chain security scanner. It reads a project's
-// dependency manifests and lockfiles, builds an SBOM, and reports known
-// vulnerabilities and supply-chain risks with a reason and a reference for
-// each finding.
+// dependency manifests and lockfiles, builds an SBOM, and reports supply-chain
+// risks with a reason and a reference for each finding.
 //
-// This is an early scaffold: it wires up the entry point and version handling.
-// Scanning is not implemented yet.
+// It only reads files. Nothing here installs, builds or executes any part of
+// the scanned project.
 package main
 
 import (
-	"flag"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -17,30 +16,32 @@ import (
 var version = "0.0.1-dev"
 
 func main() {
-	showVersion := flag.Bool("version", false, "print version and exit")
-	flag.Usage = usage
-	flag.Parse()
-
-	if *showVersion {
-		fmt.Println(version)
-		return
-	}
-
-	// No scan target yet: the scanner is not implemented. Print usage so the
-	// binary is honest about its current state instead of pretending to work.
-	usage()
-	os.Exit(2)
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-func usage() {
-	fmt.Fprintf(os.Stderr, `provenance %s - supply-chain security scanner
+// Exit codes. They are part of the interface: a pipeline reacts to them.
+const (
+	exitOK    = 0
+	exitError = 1
+	exitUsage = 2
+)
 
-Usage:
-  provenance [flags] <project-path>
+// run holds the program so that tests can drive it with explicit arguments and
+// capture what it writes, instead of reaching for the process state.
+func run(args []string, stdout, stderr io.Writer) int {
+	opts, err := parseArgs(args, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "provenance: %v\n", err)
+		return exitUsage
+	}
+	if opts == nil {
+		// A flag that prints and exits, such as -version or -help.
+		return exitOK
+	}
 
-Flags:
-  -version    print version and exit
-
-Status: early scaffold. Scanning is not implemented yet.
-`, version)
+	if err := scan(*opts, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "provenance: %v\n", err)
+		return exitError
+	}
+	return exitOK
 }
