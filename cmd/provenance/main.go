@@ -13,7 +13,7 @@ import (
 )
 
 // version is the build version. It is overridden at release time via ldflags.
-var version = "0.0.1-dev"
+var version = "0.1.0"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
