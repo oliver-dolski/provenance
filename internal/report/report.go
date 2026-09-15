@@ -6,6 +6,7 @@ package report
 import (
 	"encoding/json"
 	"io"
+	"time"
 
 	"github.com/oliver-dolski/provenance/internal/component"
 	"github.com/oliver-dolski/provenance/internal/finding"
@@ -35,6 +36,14 @@ type Report struct {
 	// Unchecked are components the database could not be asked about, because
 	// no version was resolved for them.
 	Unchecked []component.Component
+
+	// Provenance holds the build provenance proven for components, keyed by
+	// component key. Only verified statements belong here.
+	Provenance map[string]component.Provenance
+	// ProvenanceChecked is how many components could have an attestation and
+	// were asked about; ProvenanceAbsent is how many of those publish none.
+	ProvenanceChecked int
+	ProvenanceAbsent  int
 
 	// Unreadable are dependency files that were found but could not be parsed.
 	Unreadable []string
@@ -91,6 +100,21 @@ type jsonComponent struct {
 	Constraint string `json:"constraint,omitempty"`
 	Resolved   string `json:"resolved,omitempty"`
 	Source     string `json:"source"`
+
+	// Provenance is present only for components whose build statement was
+	// verified. Its absence means the statement was never published or never
+	// checked, not that it failed.
+	Provenance *jsonProvenance `json:"provenance,omitempty"`
+}
+
+type jsonProvenance struct {
+	Verified     bool   `json:"verified"`
+	SourceRepo   string `json:"source_repository"`
+	SourceCommit string `json:"source_commit,omitempty"`
+	Workflow     string `json:"build_workflow,omitempty"`
+	Builder      string `json:"builder,omitempty"`
+	Issuer       string `json:"issuer,omitempty"`
+	AttestedAt   string `json:"attested_at,omitempty"`
 }
 
 type jsonFinding struct {
@@ -120,6 +144,9 @@ type jsonCoverage struct {
 	Complete            bool            `json:"complete"`
 	VulnerabilitySource string          `json:"vulnerability_source,omitempty"`
 	ComponentsQueried   int             `json:"components_queried"`
+	ProvenanceChecked   int             `json:"provenance_checked"`
+	ProvenanceVerified  int             `json:"provenance_verified"`
+	ProvenanceAbsent    int             `json:"provenance_absent"`
 	Unchecked           []jsonComponent `json:"unchecked,omitempty"`
 	UnreadableFiles     []string        `json:"unreadable_files,omitempty"`
 	Warnings            []string        `json:"warnings,omitempty"`
@@ -140,6 +167,9 @@ func JSON(w io.Writer, r Report) error {
 			Complete:            r.Complete(),
 			VulnerabilitySource: r.VulnerabilitySource,
 			ComponentsQueried:   r.Queried,
+			ProvenanceChecked:   r.ProvenanceChecked,
+			ProvenanceVerified:  len(r.Provenance),
+			ProvenanceAbsent:    r.ProvenanceAbsent,
 			Unchecked:           convertComponents(r.Unchecked),
 			UnreadableFiles:     r.Unreadable,
 			Warnings:            r.Warnings,
@@ -147,7 +177,11 @@ func JSON(w io.Writer, r Report) error {
 		},
 	}
 	for _, c := range r.Components {
-		out.Components = append(out.Components, convertComponent(c))
+		converted := convertComponent(c)
+		if provenance, ok := r.Provenance[c.Key()]; ok {
+			converted.Provenance = convertProvenance(provenance)
+		}
+		out.Components = append(out.Components, converted)
 	}
 	for _, f := range r.Findings {
 		out.Findings = append(out.Findings, convertFinding(f))
@@ -196,6 +230,22 @@ func convertComponent(c component.Component) jsonComponent {
 		Resolved:   c.Resolved,
 		Source:     c.Source,
 	}
+}
+
+// convertProvenance renders a verified build statement.
+func convertProvenance(p component.Provenance) *jsonProvenance {
+	out := &jsonProvenance{
+		Verified:     true,
+		SourceRepo:   p.SourceRepo,
+		SourceCommit: p.SourceCommit,
+		Workflow:     p.Workflow,
+		Builder:      p.Builder,
+		Issuer:       p.Issuer,
+	}
+	if !p.SignedAt.IsZero() {
+		out.AttestedAt = p.SignedAt.UTC().Format(time.RFC3339)
+	}
+	return out
 }
 
 func convertComponents(components []component.Component) []jsonComponent {

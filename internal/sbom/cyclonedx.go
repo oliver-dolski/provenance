@@ -45,14 +45,24 @@ type Tools struct {
 
 // Component is one entry in the bill of materials.
 type Component struct {
-	Type       string     `json:"type"`
-	BOMRef     string     `json:"bom-ref,omitempty"`
-	Name       string     `json:"name"`
-	Version    string     `json:"version,omitempty"`
-	PURL       string     `json:"purl,omitempty"`
-	Scope      string     `json:"scope,omitempty"`
-	Hashes     []Hash     `json:"hashes,omitempty"`
-	Properties []Property `json:"properties,omitempty"`
+	Type               string              `json:"type"`
+	BOMRef             string              `json:"bom-ref,omitempty"`
+	Name               string              `json:"name"`
+	Version            string              `json:"version,omitempty"`
+	PURL               string              `json:"purl,omitempty"`
+	Scope              string              `json:"scope,omitempty"`
+	Hashes             []Hash              `json:"hashes,omitempty"`
+	ExternalReferences []ExternalReference `json:"externalReferences,omitempty"`
+	Properties         []Property          `json:"properties,omitempty"`
+}
+
+// ExternalReference points at something outside the document. It is how a
+// component in the bill of materials is tied back to the source it was built
+// from, for the packages where that has actually been proven.
+type ExternalReference struct {
+	Type    string `json:"type"`
+	URL     string `json:"url"`
+	Comment string `json:"comment,omitempty"`
 }
 
 // Hash is a content hash of the packaged component.
@@ -80,6 +90,11 @@ type Options struct {
 	// SerialNumber identifies this document. Empty means a fresh random one,
 	// which is what the specification asks for; tests set it to compare output.
 	SerialNumber string
+	// Provenance holds the build provenance proven for components, keyed by
+	// component key. Only what was verified belongs here: an unverified claim
+	// recorded in a bill of materials is worse than none, because the next
+	// reader has no way to tell the two apart.
+	Provenance map[string]component.Provenance
 }
 
 // Build assembles a CycloneDX document from the scanned components.
@@ -124,7 +139,7 @@ func Build(components []component.Component, opts Options) (BOM, error) {
 
 	used := make(map[string]int, len(components))
 	for _, c := range components {
-		bom.Components = append(bom.Components, convert(c, used))
+		bom.Components = append(bom.Components, convert(c, used, opts.Provenance[c.Key()]))
 	}
 	return bom, nil
 }
@@ -143,7 +158,7 @@ func Write(w io.Writer, components []component.Component, opts Options) error {
 }
 
 // convert maps one scanned component onto a CycloneDX entry.
-func convert(c component.Component, used map[string]int) Component {
+func convert(c component.Component, used map[string]int, provenance component.Provenance) Component {
 	purl := c.PURL()
 	out := Component{
 		Type:    "library",
@@ -176,7 +191,36 @@ func convert(c component.Component, used map[string]int) Component {
 	if c.Resolved != "" {
 		out.Properties = append(out.Properties, Property{Name: "provenance:resolved", Value: c.Resolved})
 	}
+	addProvenance(&out, provenance)
 	return out
+}
+
+// addProvenance records a verified build statement on the component. The
+// wording is deliberate: these fields say the statement was checked, not that
+// the publisher made it.
+func addProvenance(out *Component, p component.Provenance) {
+	if p.SourceRepo == "" {
+		return
+	}
+	out.Properties = append(out.Properties,
+		Property{Name: "provenance:attestation", Value: "verified"},
+		Property{Name: "provenance:source-repository", Value: p.SourceRepo},
+	)
+	if p.SourceCommit != "" {
+		out.Properties = append(out.Properties, Property{Name: "provenance:source-commit", Value: p.SourceCommit})
+	}
+	if p.Workflow != "" {
+		out.Properties = append(out.Properties, Property{Name: "provenance:build-workflow", Value: p.Workflow})
+	}
+	if !p.SignedAt.IsZero() {
+		out.Properties = append(out.Properties, Property{Name: "provenance:attested-at", Value: p.SignedAt.UTC().Format(time.RFC3339)})
+	}
+
+	reference := ExternalReference{Type: "vcs", URL: p.SourceRepo}
+	if p.SourceCommit != "" {
+		reference.Comment = "built from commit " + p.SourceCommit
+	}
+	out.ExternalReferences = append(out.ExternalReferences, reference)
 }
 
 // uniqueRef keeps bom-ref unique. Two components can share a package URL when

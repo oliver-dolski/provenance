@@ -91,6 +91,12 @@ const (
 	// KindMissingIntegrity is a locked component with no integrity hash, so
 	// nothing detects the artifact being swapped.
 	KindMissingIntegrity Kind = "missing-integrity"
+	// KindProvenanceFailed is a published build attestation that does not
+	// survive verification.
+	KindProvenanceFailed Kind = "provenance-failed"
+	// KindProvenanceMismatch is a build attestation that verifies but covers a
+	// different artifact than the one the project installs.
+	KindProvenanceMismatch Kind = "provenance-mismatch"
 )
 
 // Finding is one reported problem.

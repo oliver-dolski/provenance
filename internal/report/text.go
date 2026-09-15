@@ -31,6 +31,7 @@ func Text(w io.Writer, r Report) error {
 
 	writeComponents(out, r)
 	writeCoverage(out, r)
+	writeProvenance(out, r)
 	writeFindings(out, r)
 
 	if r.SBOMPath != "" {
@@ -102,6 +103,58 @@ func writeCoverage(out *writer, r Report) {
 	if len(r.KnownNames) > 0 {
 		out.labelled("", "names compared against "+knownNames(r.KnownNames))
 	}
+}
+
+// maxListedProvenance bounds the list of verified components. The count above
+// it is the number that matters; the list is there so the reader can see what
+// a verified build statement actually says.
+const maxListedProvenance = 10
+
+// writeProvenance reports which components could be tied back to the source
+// they were built from. It is stated as coverage rather than as findings:
+// most packages publish no build attestation at all, and a line per package
+// saying so would bury everything else in the report.
+func writeProvenance(out *writer, r Report) {
+	if r.ProvenanceChecked == 0 {
+		return
+	}
+
+	verified := len(r.Provenance)
+	out.printf("\n%-*s%d of %d components carry verified build provenance\n",
+		labelWidth, "provenance", verified, r.ProvenanceChecked)
+	if r.ProvenanceAbsent > 0 {
+		out.printf("%-*s%d publish none\n", labelWidth, "", r.ProvenanceAbsent)
+	}
+	if verified == 0 {
+		return
+	}
+
+	listed := 0
+	for _, c := range r.Components {
+		p, ok := r.Provenance[c.Key()]
+		if !ok {
+			continue
+		}
+		if listed == maxListedProvenance {
+			out.printf("%-*s... and %d more\n", labelWidth, "", verified-listed)
+			break
+		}
+		listed++
+
+		origin := p.SourceRepo
+		if p.SourceCommit != "" {
+			origin += "@" + shortCommit(p.SourceCommit)
+		}
+		out.labelled("", fmt.Sprintf("%s %s  built from %s", c.Name, c.Version, origin))
+	}
+}
+
+// shortCommit trims a revision to the length people actually quote.
+func shortCommit(commit string) string {
+	if len(commit) <= 12 {
+		return commit
+	}
+	return commit[:12]
 }
 
 // writeFindings prints the findings, most severe first.

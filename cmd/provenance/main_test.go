@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/oliver-dolski/provenance/internal/attest"
 	"github.com/oliver-dolski/provenance/internal/component"
 	"github.com/oliver-dolski/provenance/internal/finding"
 	"github.com/oliver-dolski/provenance/internal/osv"
@@ -21,7 +23,34 @@ func TestMain(m *testing.M) {
 	vulnerabilityLookup = func(context.Context, []component.Component) (osv.Result, error) {
 		return osv.Result{}, errors.New("no vulnerability lookup was stubbed for this test")
 	}
+	// The provenance check reaches a registry too. It defaults to finding
+	// nothing rather than to failing, because most tests are not about it.
+	provenanceLookup = func(context.Context, []component.Component) (attest.Result, error) {
+		return attest.Result{}, nil
+	}
 	os.Exit(m.Run())
+}
+
+// stubProvenance replaces the build provenance check for one test.
+func stubProvenance(t *testing.T, result attest.Result, err error) {
+	t.Helper()
+	original := provenanceLookup
+	provenanceLookup = func(context.Context, []component.Component) (attest.Result, error) {
+		return result, err
+	}
+	t.Cleanup(func() { provenanceLookup = original })
+}
+
+// verifiedProvenance is a stand-in for a checked build statement.
+func verifiedProvenance() component.Provenance {
+	return component.Provenance{
+		SourceRepo:   "https://github.com/pallets/flask",
+		SourceCommit: "1f3d8b6e1f3d8b6e1f3d8b6e1f3d8b6e1f3d8b6e",
+		Workflow:     ".github/workflows/release.yml@refs/heads/main",
+		Builder:      "https://github.com/actions/runner/github-hosted",
+		Issuer:       "https://token.actions.githubusercontent.com",
+		SignedAt:     time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC),
+	}
 }
 
 // stubLookup replaces the vulnerability lookup for one test.
@@ -232,6 +261,131 @@ func TestRunStatesAnIncompleteScan(t *testing.T) {
 	}
 	if len(decoded.Coverage.Unchecked) != 1 || decoded.Coverage.Unchecked[0].Name != "requests" {
 		t.Errorf("unchecked = %+v, want the component that has no version", decoded.Coverage.Unchecked)
+	}
+}
+
+func TestRunReportsVerifiedProvenance(t *testing.T) {
+	stubLookup(t, osv.Result{}, nil)
+
+	root := sampleProject(t)
+	// The key has to match the component the scan builds from the manifest,
+	// which is what ties a verified statement to a line in a lockfile.
+	flask := component.Component{Name: "flask", Ecosystem: component.PyPI, Version: "3.0.0"}
+	stubProvenance(t, attest.Result{
+		Verified: map[string]component.Provenance{flask.Key(): verifiedProvenance()},
+		Checked:  3,
+		Absent:   2,
+	}, nil)
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{root}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit = %d, want %d (stderr: %s)", code, exitOK, stderr.String())
+	}
+
+	out := stdout.String()
+	for _, want := range []string{
+		"1 of 3 components carry verified build provenance",
+		"2 publish none",
+		"flask 3.0.0 built from",
+		// Shortened to the length people quote, and the line may wrap before
+		// it, so the repository and revision are looked for on their own.
+		"https://github.com/pallets/flask@1f3d8b6e1f3d",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "1f3d8b6e1f3d8b6e") {
+		t.Error("the full revision is printed where a short one is enough")
+	}
+}
+
+func TestRunRecordsProvenanceInTheSBOM(t *testing.T) {
+	stubLookup(t, osv.Result{}, nil)
+	flask := component.Component{Name: "flask", Ecosystem: component.PyPI, Version: "3.0.0"}
+	stubProvenance(t, attest.Result{
+		Verified: map[string]component.Provenance{flask.Key(): verifiedProvenance()},
+		Checked:  1,
+	}, nil)
+
+	target := filepath.Join(t.TempDir(), "sbom.json")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-sbom", target, sampleProject(t)}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit = %d, want %d (stderr: %s)", code, exitOK, stderr.String())
+	}
+
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("reading SBOM: %v", err)
+	}
+	var bom struct {
+		Components []struct {
+			Name               string `json:"name"`
+			ExternalReferences []struct {
+				Type string `json:"type"`
+				URL  string `json:"url"`
+			} `json:"externalReferences"`
+			Properties []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"properties"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(data, &bom); err != nil {
+		t.Fatalf("SBOM is not valid JSON: %v", err)
+	}
+
+	var checked bool
+	for _, c := range bom.Components {
+		if c.Name != "flask" {
+			continue
+		}
+		checked = true
+		var attested string
+		for _, p := range c.Properties {
+			if p.Name == "provenance:attestation" {
+				attested = p.Value
+			}
+		}
+		if attested != "verified" {
+			t.Errorf("flask carries provenance:attestation = %q, want verified", attested)
+		}
+		if len(c.ExternalReferences) == 0 || c.ExternalReferences[0].Type != "vcs" {
+			t.Errorf("flask has no source reference: %+v", c.ExternalReferences)
+		}
+	}
+	if !checked {
+		t.Fatal("flask is missing from the SBOM")
+	}
+}
+
+func TestRunSkipsProvenanceWhenTurnedOff(t *testing.T) {
+	stubLookup(t, osv.Result{}, nil)
+	provenanceLookup = func(context.Context, []component.Component) (attest.Result, error) {
+		t.Error("provenance was checked although -attest=false was given")
+		return attest.Result{}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-attest=false", sampleProject(t)}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("exit = %d, want %d", code, exitOK)
+	}
+	if strings.Contains(stdout.String(), "build provenance") {
+		t.Errorf("report mentions provenance although the check did not run:\n%s", stdout.String())
+	}
+}
+
+func TestRunTreatsAFailedProvenanceLookupAsAGap(t *testing.T) {
+	stubLookup(t, osv.Result{}, nil)
+	stubProvenance(t, attest.Result{}, errors.New("registry unreachable"))
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{sampleProject(t)}, &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("exit = %d, want %d: the rest of the scan still holds", code, exitOK)
+	}
+	if !strings.Contains(stdout.String(), "registry unreachable") {
+		t.Errorf("report does not state that provenance could not be checked:\n%s", stdout.String())
 	}
 }
 

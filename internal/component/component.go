@@ -5,9 +5,12 @@
 package component
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Ecosystem identifies the package registry a component comes from. The values
@@ -108,10 +111,66 @@ func (c Component) Pinned() bool {
 	return c.Version != ""
 }
 
+// ParseIntegrity splits a Subresource Integrity string, as npm lockfiles record
+// it ("sha512-<base64>"), into the hash algorithm and the digest in hex. Both
+// the bill of materials and the provenance check need the digest in that form:
+// one to state it, the other to compare it against what an attestation covers.
+func ParseIntegrity(integrity string) (algorithm, digest string, ok bool) {
+	integrity = strings.TrimSpace(integrity)
+	if integrity == "" {
+		return "", "", false
+	}
+	// The field may list several hashes separated by whitespace; the first one
+	// identifies the artifact.
+	if idx := strings.IndexAny(integrity, " 	"); idx > 0 {
+		integrity = integrity[:idx]
+	}
+
+	name, encoded, found := strings.Cut(integrity, "-")
+	if !found {
+		return "", "", false
+	}
+	switch name = strings.ToLower(name); name {
+	case "sha512", "sha384", "sha256", "sha1":
+	default:
+		return "", "", false
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", "", false
+	}
+	return name, hex.EncodeToString(raw), true
+}
+
+// Digest returns the component's content hash in hex, when the lockfile
+// recorded one.
+func (c Component) Digest() (algorithm, digest string, ok bool) {
+	return ParseIntegrity(c.Integrity)
+}
+
 // Key identifies a component for deduplication: the same package at the same
 // version, however many manifests mention it, is one component.
 func (c Component) Key() string {
 	return string(c.Ecosystem) + "|" + c.Ecosystem.NormalizeName(c.Name) + "|" + c.Version
+}
+
+// Provenance is a verified statement about how a component was built. It is
+// separate from Component because it is not read from a manifest: it is proven
+// against a signature, and only for the few packages that publish one.
+type Provenance struct {
+	// SourceRepo and SourceCommit are the repository and revision the build
+	// consumed.
+	SourceRepo   string
+	SourceCommit string
+	// Workflow is the build definition that ran.
+	Workflow string
+	// Builder is the platform that issued the statement.
+	Builder string
+	// Issuer is the identity provider that authenticated the build.
+	Issuer string
+	// SignedAt is when the transparency log recorded the signature.
+	SignedAt time.Time
 }
 
 // Set collects components, merging duplicates instead of listing a package

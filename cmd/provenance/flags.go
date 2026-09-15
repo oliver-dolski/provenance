@@ -19,6 +19,10 @@ type options struct {
 	SBOMPath string
 	// Format is how the report itself is rendered: "text" or "json".
 	Format string
+	// Attest turns the build provenance check on. It costs one request per npm
+	// package, which is worth stating rather than doing quietly on a large
+	// project.
+	Attest bool
 	// Offline skips the vulnerability database. The supply-chain checks that
 	// need no network still run, and the report states that the lookup did not.
 	Offline bool
@@ -43,7 +47,8 @@ func parseArgs(args []string, stderr io.Writer) (*options, error) {
 	showVersion := fs.Bool("version", false, "print version and exit")
 	sbomPath := fs.String("sbom", "", `write a CycloneDX SBOM to this file ("-" for stdout)`)
 	format := fs.String("format", formatText, "report format: text or json")
-	offline := fs.Bool("offline", false, "skip the vulnerability database and run only the offline checks")
+	offline := fs.Bool("offline", false, "skip every network lookup and run only the offline checks")
+	attest := fs.Bool("attest", true, "verify published build provenance (one registry request per npm package)")
 	failOn := fs.String("fail-on", "none", "exit non-zero when a finding of this severity or higher is reported: none, low, medium, high, critical")
 
 	if err := fs.Parse(args); err != nil {
@@ -57,7 +62,7 @@ func parseArgs(args []string, stderr io.Writer) (*options, error) {
 		return nil, nil
 	}
 
-	opts := options{SBOMPath: *sbomPath, Format: strings.ToLower(*format), Offline: *offline}
+	opts := options{SBOMPath: *sbomPath, Format: strings.ToLower(*format), Offline: *offline, Attest: *attest}
 
 	switch opts.Format {
 	case formatText, formatJSON:
@@ -102,7 +107,9 @@ Usage:
 Flags:
   -sbom <file>       write a CycloneDX SBOM to <file> ("-" for stdout)
   -format <format>   report format: text (default) or json
-  -offline           skip the vulnerability database; run only the offline checks
+  -offline           skip every network lookup; run only the offline checks
+  -attest=false      do not verify build provenance (it costs one registry
+                     request per npm package)
   -fail-on <level>   exit %d when a finding of this severity or higher is
                      reported: none (default), low, medium, high, critical
   -version           print version and exit

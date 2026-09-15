@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/oliver-dolski/provenance/internal/attest"
 	"github.com/oliver-dolski/provenance/internal/component"
 	"github.com/oliver-dolski/provenance/internal/finding"
 	"github.com/oliver-dolski/provenance/internal/manifest"
@@ -24,6 +25,11 @@ const lookupTimeout = 2 * time.Minute
 // vulnerabilityLookup is the vulnerability database call, replaced in tests.
 var vulnerabilityLookup = func(ctx context.Context, components []component.Component) (osv.Result, error) {
 	return osv.NewClient("provenance/"+version).Check(ctx, components)
+}
+
+// provenanceLookup fetches and verifies build attestations, replaced in tests.
+var provenanceLookup = func(ctx context.Context, components []component.Component) (attest.Result, error) {
+	return attest.NewClient("provenance/"+version).Check(ctx, components)
 }
 
 // scan reads the project, checks it, and reports what was found.
@@ -64,6 +70,22 @@ func scan(opts options, stdout, stderr io.Writer) (int, error) {
 		result.Unchecked = lookup.Skipped
 		result.Warnings = append(result.Warnings, lookup.Warnings...)
 		result.Findings = append(result.Findings, lookup.Findings...)
+
+		if opts.Attest {
+			// Unlike the vulnerability lookup, a registry that will not answer
+			// here costs coverage rather than correctness: the components that
+			// were checked are still checked, and the report says how many.
+			provenance, err := provenanceLookup(ctx, components)
+			if err != nil {
+				result.Warnings = append(result.Warnings, "build provenance: "+err.Error())
+			} else {
+				result.Provenance = provenance.Verified
+				result.ProvenanceChecked = provenance.Checked
+				result.ProvenanceAbsent = provenance.Absent
+				result.Warnings = append(result.Warnings, provenance.Warnings...)
+				result.Findings = append(result.Findings, provenance.Findings...)
+			}
+		}
 	}
 	// The two sets of findings were each ordered on their own; combining them
 	// needs one pass so the report reads most severe first.
@@ -78,7 +100,7 @@ func scan(opts options, stdout, stderr io.Writer) (int, error) {
 	}
 
 	if opts.SBOMPath != "" {
-		if err := writeSBOM(opts, components, stdout); err != nil {
+		if err := writeSBOM(opts, components, result.Provenance, stdout); err != nil {
 			return exitError, err
 		}
 		result.SBOMPath = opts.SBOMPath
@@ -114,11 +136,12 @@ func exitCodeFor(opts options, result report.Report) int {
 }
 
 // writeSBOM writes the CycloneDX document to the requested destination.
-func writeSBOM(opts options, components []component.Component, stdout io.Writer) error {
+func writeSBOM(opts options, components []component.Component, provenance map[string]component.Provenance, stdout io.Writer) error {
 	sbomOpts := sbom.Options{
 		ProjectName: projectName(opts.Path),
 		ToolVersion: version,
 		Timestamp:   time.Now(),
+		Provenance:  provenance,
 	}
 
 	if opts.SBOMPath == "-" {

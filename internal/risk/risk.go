@@ -135,7 +135,7 @@ func checkPrivateSource(c component.Component) (finding.Finding, bool) {
 			"%s resolves this package to %s.%s Confirm that the build cannot fall back to a public index for this name.",
 			c.Source, c.Resolved, protection),
 		Source:     source,
-		References: []string{"https://slsa.dev/spec/v1.0/threats"},
+		References: []string{"https://slsa.dev/spec/v1.0/threats#d-use-compromised-dependency"},
 	}, true
 }
 
@@ -192,6 +192,6 @@ func checkMissingIntegrity(c component.Component) (finding.Finding, bool) {
 			"%s records where %s comes from but no hash of what it contains, so an install cannot tell that the artifact served for this version is the one that was reviewed.",
 			c.Source, c.Name),
 		Source:     source,
-		References: []string{"https://slsa.dev/spec/v1.0/threats"},
+		References: []string{"https://slsa.dev/spec/v1.0/threats#g-compromise-package-registry"},
 	}, true
 }
