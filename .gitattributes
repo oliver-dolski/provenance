@@ -1,0 +1,8 @@
+# Normalize to LF in the repository regardless of the platform a contributor
+# works on. Go tooling, shell scripts and the test fixtures below are all
+# line-ending sensitive in at least one tool, and a mixed repository turns
+# every cross-platform pull request into a whitespace diff.
+* text=auto eol=lf
+
+# Lockfile fixtures are compared byte for byte by the parser tests.
+testdata/** -text
