@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Go
+/bin/
+*.exe
+*.test
+
+# Node
+node_modules/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local planning artifacts - internal notes in the author's language, not part
+# of the delivered tool and of no value to anyone but the author. They stay on
+# the machine and never enter the public repository.
+USTALENIA.md
+.planning/
+scratch/
