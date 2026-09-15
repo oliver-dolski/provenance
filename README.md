@@ -20,6 +20,13 @@ checked     4 of 4 components against OSV
             names compared against 125 known npm packages and 119 known PyPI
             packages
 
+provenance  2 of 4 components carry verified build provenance
+            2 publish none
+            sigstore 3.0.0 built from
+            https://github.com/sigstore/sigstore-js@3a57a741bfb9
+            tuf-js 3.0.1 built from
+            https://github.com/theupdateframework/tuf-js@18a6f58bbae7
+
 findings    16  (2 critical, 6 high, 8 medium)
 
   CRITICAL lodash 4.17.11  (package-lock.json)
@@ -51,6 +58,28 @@ dependencies as if the project had declared them.
 
 ## What it checks
 
+**Where the package came from.** npm publishes Sigstore bundles stating which
+repository, which commit and which workflow produced a tarball. `provenance`
+verifies them rather than displaying them:
+
+1. The transparency log's signed entry timestamp is checked against Rekor's
+   key, and the log entry's payload hash against the statement. The signing
+   certificate is valid for ten minutes, so the signing time has to come from
+   somewhere other than the bundle's own claim - and the payload hash is what
+   stops a genuine timestamp being borrowed from a different entry.
+2. The signing certificate is verified against vendored Fulcio roots **as of
+   that time**, and the statement's repository is checked against the workflow
+   identity in the certificate.
+3. The DSSE signature is verified against the key the certificate binds.
+4. The attested artifact digest is compared with the `integrity` hash in the
+   lockfile. This is the step that turns a valid statement about *some* tarball
+   into a statement about *the one this project installs*.
+
+Trust roots are vendored rather than fetched: a root downloaded at scan time is
+trusted on the strength of the connection that delivered it, which is what
+signatures exist to stop relying on. Replacing them is a commit, visible in
+this repository's history.
+
 **Known vulnerabilities**, from [OSV](https://osv.dev), which aggregates the
 advisory feeds of both ecosystems. Severity is computed from the published
 CVSS v3 vector rather than taken from whichever word a database attached;
@@ -66,6 +95,11 @@ identifiers are reported once, with every identifier kept.
 | private-source | a package fetched from somewhere other than the public registry, which is the precondition for dependency confusion |
 | typosquat | a name one typo away from a widely used package |
 | missing-integrity | a locked package with no hash, so a swapped artifact is not detected |
+| provenance-failed | a published build attestation that does not survive verification |
+| provenance-mismatch | an attestation that verifies, and covers a different artifact than the lockfile pins |
+
+Packages that publish no attestation are counted rather than listed. Most still
+publish none, and a finding each would bury everything else in the report.
 
 Each finding is mapped to the obligation it engages: the CRA requirement to
 inventory components and to remediate without delay, or the SLSA threat it
@@ -78,7 +112,9 @@ provenance [flags] <project-path>
 
   -sbom <file>       write a CycloneDX SBOM to <file> ("-" for stdout)
   -format <format>   report format: text (default) or json
-  -offline           skip the vulnerability database; run only the offline checks
+  -offline           skip every network lookup; run only the offline checks
+  -attest=false      do not verify build provenance (it costs one registry
+                     request per npm package)
   -fail-on <level>   exit 3 when a finding of this severity or higher is
                      reported: none (default), low, medium, high, critical
   -version           print version and exit
@@ -104,6 +140,12 @@ adding this to a pipeline does not break the pipeline by surprise.
 - It does not resolve version ranges. A dependency with no lockfile entry is
   reported as unpinned and is not queried for vulnerabilities, because matching
   a range against advisory ranges would be a guess presented as a result.
+- Provenance verification checks the transparency log's signed entry timestamp,
+  not the Merkle inclusion proof. That establishes that the log signed this
+  entry at this time; it does not prove the entry is in the published tree.
+- Only npm publishes attestations this tool reads. PyPI attestations (PEP 740)
+  are not read yet, so a PyPI component is never reported as having verified
+  provenance - which is a gap in the tool, not a statement about the package.
 - Other ecosystems and lockfile formats - Go modules, Maven, `yarn.lock`,
   `pnpm-lock.yaml`, `Pipfile.lock` - are not read yet.
 - The typosquatting check compares against a bundled list of a few hundred
