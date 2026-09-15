@@ -117,13 +117,22 @@ func (c Component) Key() string {
 // Set collects components, merging duplicates instead of listing a package
 // twice because two manifests both declared it.
 type Set struct {
-	order []string
-	byKey map[string]*Component
+	order  []string
+	byKey  map[string]*Component
+	byName map[string][]*Component
 }
 
 // NewSet returns an empty Set.
 func NewSet() *Set {
-	return &Set{byKey: make(map[string]*Component)}
+	return &Set{
+		byKey:  make(map[string]*Component),
+		byName: make(map[string][]*Component),
+	}
+}
+
+// nameKey identifies a package regardless of version.
+func nameKey(eco Ecosystem, name string) string {
+	return string(eco) + "|" + eco.NormalizeName(name)
 }
 
 // Add stores a component, merging it into an existing entry with the same key.
@@ -136,6 +145,8 @@ func (s *Set) Add(c Component) {
 		copied := c
 		s.byKey[key] = &copied
 		s.order = append(s.order, key)
+		nk := nameKey(c.Ecosystem, c.Name)
+		s.byName[nk] = append(s.byName[nk], &copied)
 		return
 	}
 	if c.Direct {
@@ -156,6 +167,32 @@ func (s *Set) Add(c Component) {
 	}
 	if existing.Source != c.Source && !strings.Contains(existing.Source, c.Source) {
 		existing.Source += ", " + c.Source
+	}
+}
+
+// Declare records a dependency the project states in its own manifest. When a
+// lockfile already resolved that package, the declaration only annotates it -
+// it is a direct dependency and this is the range that was asked for - instead
+// of adding a second, versionless copy of the same package. A declaration with
+// no resolved counterpart is added on its own: an unpinned dependency is a
+// finding, not something to drop.
+func (s *Set) Declare(c Component) {
+	resolved := s.byName[nameKey(c.Ecosystem, c.Name)]
+	if len(resolved) == 0 {
+		s.Add(c)
+		return
+	}
+	for _, existing := range resolved {
+		existing.Direct = true
+		if existing.Constraint == "" {
+			existing.Constraint = c.Constraint
+		}
+		if !c.Dev {
+			existing.Dev = false
+		}
+		if !strings.Contains(existing.Source, c.Source) {
+			existing.Source += ", " + c.Source
+		}
 	}
 }
 

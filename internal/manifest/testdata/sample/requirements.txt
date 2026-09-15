@@ -1,0 +1,12 @@
+# Runtime requirements for the sample project.
+-r requirements/base.txt
+
+Flask==3.0.0
+requests>=2.31.0          # unpinned on purpose: see base.txt
+zope.interface == 6.1
+uvicorn[standard]==0.27.0 ; python_version >= "3.8"
+cryptography==42.0.2 \
+    --hash=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+internal-tool @ https://artifacts.example.com/internal-tool-1.0.tar.gz
+-e ./local-package
+--extra-index-url https://pypi.internal.example.com/simple

@@ -102,3 +102,28 @@ func TestPinned(t *testing.T) {
 		t.Error("a component with only a constraint should not be pinned")
 	}
 }
+
+func TestDeclareAnnotatesResolvedComponent(t *testing.T) {
+	s := NewSet()
+	s.Add(Component{Name: "lodash", Ecosystem: NPM, Version: "4.17.21", Dev: true, Source: "package-lock.json"})
+	s.Declare(Component{Name: "lodash", Ecosystem: NPM, Constraint: "^4.17.0", Source: "package.json"})
+
+	if s.Len() != 1 {
+		t.Fatalf("Len = %d, want 1: a declaration must not clone the resolved package", s.Len())
+	}
+	got := s.All()[0]
+	if !got.Direct || got.Version != "4.17.21" || got.Constraint != "^4.17.0" {
+		t.Errorf("got %+v, want direct lodash@4.17.21 constrained to ^4.17.0", got)
+	}
+}
+
+func TestDeclareKeepsUnresolvedDependency(t *testing.T) {
+	s := NewSet()
+	s.Declare(Component{Name: "express", Ecosystem: NPM, Constraint: "^4.18.0", Direct: true, Source: "package.json"})
+	if s.Len() != 1 {
+		t.Fatalf("Len = %d, want 1: an unpinned declaration is still a component", s.Len())
+	}
+	if s.All()[0].Pinned() {
+		t.Error("a declaration without a lockfile must not look pinned")
+	}
+}
