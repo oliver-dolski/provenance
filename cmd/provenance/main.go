@@ -24,6 +24,10 @@ const (
 	exitOK    = 0
 	exitError = 1
 	exitUsage = 2
+	// exitFindings is reported only when the caller asked for it with -fail-on,
+	// so that adding this tool to a pipeline does not break the pipeline by
+	// surprise.
+	exitFindings = 3
 )
 
 // run holds the program so that tests can drive it with explicit arguments and
@@ -39,9 +43,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 
-	if err := scan(*opts, stdout, stderr); err != nil {
+	code, err := scan(*opts, stdout, stderr)
+	if err != nil {
 		fmt.Fprintf(stderr, "provenance: %v\n", err)
 		return exitError
 	}
-	return exitOK
+	return code
 }

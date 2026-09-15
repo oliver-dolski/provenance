@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -8,34 +9,108 @@ import (
 	"time"
 
 	"github.com/oliver-dolski/provenance/internal/component"
+	"github.com/oliver-dolski/provenance/internal/finding"
 	"github.com/oliver-dolski/provenance/internal/manifest"
+	"github.com/oliver-dolski/provenance/internal/osv"
+	"github.com/oliver-dolski/provenance/internal/report"
+	"github.com/oliver-dolski/provenance/internal/risk"
 	"github.com/oliver-dolski/provenance/internal/sbom"
 )
 
-// scan reads the project and reports what it found.
-func scan(opts options, stdout, stderr io.Writer) error {
+// lookupTimeout bounds the whole vulnerability lookup. A scan that hangs on a
+// slow network is worse than one that says it could not finish.
+const lookupTimeout = 2 * time.Minute
+
+// vulnerabilityLookup is the vulnerability database call, replaced in tests.
+var vulnerabilityLookup = func(ctx context.Context, components []component.Component) (osv.Result, error) {
+	return osv.NewClient("provenance/"+version).Check(ctx, components)
+}
+
+// scan reads the project, checks it, and reports what was found.
+func scan(opts options, stdout, stderr io.Writer) (int, error) {
 	set, problems, err := manifest.Scan(opts.Path)
 	if err != nil {
-		return err
+		return exitError, err
 	}
 	components := set.All()
 
-	// The summary is a report for a person and the SBOM is a document for a
-	// machine. When the SBOM goes to standard output, the summary steps aside
-	// so the document can be piped without being corrupted by prose.
-	summaryOut := stdout
+	files, _ := manifest.Discover(opts.Path)
+	result := report.Report{
+		Tool:       "provenance",
+		Version:    version,
+		Path:       opts.Path,
+		Sources:    sourceNames(files),
+		Components: components,
+		Findings:   risk.Check(components),
+		Unreadable: problemNames(problems),
+		KnownNames: map[string]int{
+			string(component.NPM):  risk.PopularNameCount(component.NPM),
+			string(component.PyPI): risk.PopularNameCount(component.PyPI),
+		},
+	}
+
+	if !opts.Offline && len(components) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), lookupTimeout)
+		defer cancel()
+
+		lookup, err := vulnerabilityLookup(ctx, components)
+		if err != nil {
+			// A report that silently holds no vulnerabilities because the
+			// database was unreachable is the one outcome worth failing for.
+			return exitError, fmt.Errorf("vulnerability lookup failed (use -offline to scan without it): %w", err)
+		}
+		result.VulnerabilitySource = "OSV"
+		result.Queried = lookup.Checked
+		result.Unchecked = lookup.Skipped
+		result.Warnings = append(result.Warnings, lookup.Warnings...)
+		result.Findings = append(result.Findings, lookup.Findings...)
+	}
+	// The two sets of findings were each ordered on their own; combining them
+	// needs one pass so the report reads most severe first.
+	finding.Sort(result.Findings)
+
+	// The report is for a person or a pipeline; the SBOM is a document for
+	// another tool. Whichever of them is sent to standard output has it to
+	// itself, so it can be piped without prose or a second document mixed in.
+	reportOut := stdout
 	if opts.SBOMPath == "-" {
-		summaryOut = stderr
+		reportOut = stderr
 	}
 
 	if opts.SBOMPath != "" {
 		if err := writeSBOM(opts, components, stdout); err != nil {
-			return err
+			return exitError, err
 		}
+		result.SBOMPath = opts.SBOMPath
 	}
 
-	printSummary(summaryOut, opts, components, problems)
-	return nil
+	if err := render(opts, result, reportOut); err != nil {
+		return exitError, err
+	}
+	return exitCodeFor(opts, result), nil
+}
+
+// render writes the report in the requested format.
+func render(opts options, result report.Report, w io.Writer) error {
+	if opts.Format == formatJSON {
+		return report.JSON(w, result)
+	}
+	return report.Text(w, result)
+}
+
+// exitCodeFor decides what the process reports to its caller. Findings only
+// change the exit code when the caller asked for that with -fail-on, so that
+// adding this tool to a pipeline does not break the pipeline by surprise.
+func exitCodeFor(opts options, result report.Report) int {
+	if !opts.FailOnSet {
+		return exitOK
+	}
+	for _, f := range result.Findings {
+		if f.Severity >= opts.FailOn {
+			return exitFindings
+		}
+	}
+	return exitOK
 }
 
 // writeSBOM writes the CycloneDX document to the requested destination.
@@ -64,72 +139,25 @@ func writeSBOM(opts options, components []component.Component, stdout io.Writer)
 	return nil
 }
 
-// printSummary states what was scanned and what was found.
-func printSummary(w io.Writer, opts options, components []component.Component, problems []manifest.Problem) {
-	byEcosystem := map[component.Ecosystem]int{}
-	var direct, unpinned, dev int
-	for _, c := range components {
-		byEcosystem[c.Ecosystem]++
-		if c.Direct {
-			direct++
-		}
-		if !c.Pinned() {
-			unpinned++
-		}
-		if c.Dev {
-			dev++
-		}
+// sourceNames lists the dependency files that were read.
+func sourceNames(files []manifest.File) []string {
+	names := make([]string, 0, len(files))
+	for _, f := range files {
+		names = append(names, f.Rel)
 	}
-
-	fmt.Fprintf(w, "provenance %s\n", version)
-	fmt.Fprintf(w, "scanned %s\n\n", opts.Path)
-
-	fmt.Fprintf(w, "components  %d", len(components))
-	if len(byEcosystem) > 0 {
-		fmt.Fprintf(w, " (%s)", ecosystemBreakdown(byEcosystem))
-	}
-	fmt.Fprintf(w, "\n")
-	fmt.Fprintf(w, "  direct    %d\n", direct)
-	fmt.Fprintf(w, "  indirect  %d\n", len(components)-direct)
-	fmt.Fprintf(w, "  dev only  %d\n", dev)
-	// An unpinned dependency is the one count here that is already a finding:
-	// the next release of that package enters the build without review.
-	fmt.Fprintf(w, "  unpinned  %d\n", unpinned)
-
-	if opts.SBOMPath != "" && opts.SBOMPath != "-" {
-		fmt.Fprintf(w, "\nSBOM written to %s (CycloneDX %s)\n", opts.SBOMPath, sbom.SpecVersion)
-	}
-
-	if len(problems) > 0 {
-		// Said out loud, because a file the scanner could not read is a hole in
-		// everything above it.
-		fmt.Fprintf(w, "\nnot read (%d):\n", len(problems))
-		for _, p := range problems {
-			fmt.Fprintf(w, "  %s\n", p)
-		}
-	}
-
-	if len(components) == 0 && len(problems) == 0 {
-		fmt.Fprintf(w, "\nNo dependency manifests or lockfiles found under this path.\n")
-	}
+	return names
 }
 
-// ecosystemBreakdown renders the per-ecosystem counts in a stable order.
-func ecosystemBreakdown(counts map[component.Ecosystem]int) string {
-	// The same order the components are listed in, so the two agree.
-	order := []component.Ecosystem{component.NPM, component.PyPI}
-	out := ""
-	for _, eco := range order {
-		count, ok := counts[eco]
-		if !ok {
-			continue
-		}
-		if out != "" {
-			out += ", "
-		}
-		out += fmt.Sprintf("%s %d", eco, count)
+// problemNames lists the files that could not be parsed.
+func problemNames(problems []manifest.Problem) []string {
+	if len(problems) == 0 {
+		return nil
 	}
-	return out
+	names := make([]string, 0, len(problems))
+	for _, p := range problems {
+		names = append(names, p.Error())
+	}
+	return names
 }
 
 // projectName names the scanned project after its directory, which is the only
