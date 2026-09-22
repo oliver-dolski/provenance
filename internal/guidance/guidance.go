@@ -46,7 +46,7 @@ var craSBOM = Reference{
 var craRemediate = Reference{
 	Framework: "CRA",
 	Clause:    "Regulation (EU) 2024/2847, Annex I, Part II (2)",
-	Statement: "in relation to the risks posed to products with digital elements, address and remediate vulnerabilities without delay, including by providing security updates",
+	Statement: "in relation to the risks posed to products with digital elements, address and remediate vulnerabilities without delay, including by providing security updates; where technically feasible, new security updates shall be provided separately from functionality updates",
 	URL:       craURL,
 }
 

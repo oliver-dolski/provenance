@@ -37,9 +37,11 @@ findings    16  (2 critical, 6 high, 8 medium)
            Pollution. The function defaultsDeep allows a malicious user to
            modify the prototype of Object...
            https://nvd.nist.gov/vuln/detail/CVE-2019-10744
-           CRA Regulation (EU) 2024/2847, Annex I, Part II (2): address and
+           CRA Regulation (EU) 2024/2847, Annex I, Part II (2): in relation to
+           the risks posed to products with digital elements, address and
            remediate vulnerabilities without delay, including by providing
-           security updates
+           security updates; where technically feasible, new security updates
+           shall be provided separately from functionality updates
 ```
 
 ## What it reads
